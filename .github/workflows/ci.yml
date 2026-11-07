@@ -66,6 +66,11 @@ jobs:
           docker build --target frontend-build -t localinterfaceweb-frontend-check .
           docker run --rm localinterfaceweb-frontend-check pnpm test
           docker run --rm localinterfaceweb-frontend-check pnpm audit --audit-level=moderate
+      - name: Check Chromium Firefox and WebKit against the running stack
+        run: |
+          python -m pip install playwright==1.64.1
+          python -m playwright install --with-deps chromium firefox webkit
+          python scripts/browser_smoke.py
       - name: Show diagnostics on failure
         if: failure()
         run: |
