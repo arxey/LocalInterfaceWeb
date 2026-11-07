@@ -20,21 +20,41 @@
 | Старые ответы/двойные действия/ложный пустой каталог | Abort guards, защита повторных запросов, retry и восстановление пагинации |
 | Диалог не удерживал/возвращал фокус | Focus trap, Escape, inert, блокировка закрытия во время сохранения |
 | Запуск зависел от локального npm/Node/PATH | Docker+Compose, платформенные launchers, генерируемый env |
+| Gunicorn пытался создать служебный сокет в недоступном home | Документированный --no-control-socket; Compose управляет жизненным циклом |
 | Известные уязвимости пакетов | DRF3.18.2, Pillow13, Vite6.4.5, Vitest4.1.12, обновленный lock |
 
 ## Выполнено локально
 
 - Windows, Python3.12, отдельная PostgreSQL18 с localeC:34 backend теста PASS. Тестовая БД создавалась и удалялась Django; пользовательская коллекция Downloads не изменялась.
 - Дополнительный автономный SQLite прогон34 PASS; makemigrations --check --dry-run и manage.py check чистые.
-- Node24/pnpm10.34.9: frontend tests, TypeScript/Vite build PASS. Независимая установка в пустом каталоге с frozen lock, esbuild postinstall и build также PASS.
+- Node24/pnpm10.34.9:18 frontend тестов PASS, TypeScript/Vite build PASS. Независимая установка в пустом каталоге с frozen lock, esbuild postinstall и build также PASS.
 - pip-audit требований:0 известных уязвимостей после обновления (до исправления42 advisories в2пакетах). pnpm audit:0 после исправления (до11). Число advisories не равно числу независимо эксплуатируемых дефектов.
 - Bandit:0 high/medium.12 low просмотрены вручную:11 тестовых паролей в test_security.py и1 сравнение с запрещенным старым секретом в settings.py; рабочих секретов эти строки не содержат.
 -5 Windows launcher тестов PASS с подставным Docker: повторяемая генерация, сохранность env, старый Compose, неработающий daemon, ошибки запуска, остановка без удаления томов.
 - Официальный standalone Compose CLI проверил config --quiet для обычного и tools профиля. Docker Engine локально отсутствует; реальную сборку и запуск проверяет CI.
 - Chromium151.0.7922.34: реальная PostgreSQL, гостевой просмотр, оригинал с naturalWidth>0, login/CSRF, загрузка, поиск кириллицей, редактирование, удаление, logout PASS; page/console errors0. Viewports1440×1000 и390×844, нет горизонтального переполнения документа. Browser plugin отсутствует, использован Playwright.
+- WebKit26.5: такой же сквозной сценарий PASS, page/console errors0. Локальный Firefox153 не запустился из-за отсутствующей Windows side-by-side зависимости; его сценарий перенесен на Linux CI с установкой browser dependencies.
+- Пояснительная записка обновлена,36 страниц всего и35 без приложения. Рендер: Word PDF + Poppler, просмотр всех36 страниц; оглавление сверено с фактическими страницами, расхождений0. Штатный render_docx.py не нашел LibreOffice в Windows, использован установленный Word.
+- manage.py check --deploy выдает4 ожидаемых предупреждения локального HTTP: HSTS, HTTPS redirect, Secure session/CSRF cookies. Они не скрыты: при внешнем размещении необходимы TLS reverse proxy/redirect/HSTS и DJANGO_SECURE_COOKIES=1. Обычный check чистый.
 
 ## CI и границы
 
-Workflow `.github/workflows/ci.yml` проверяет launchers на Windows/macOS/Linux, чистый Docker startup, optional pgAdmin, Nginx, PostgreSQL tests, HTTP smoke, холодный restart с сохранением строк/файлов/секретов, frontend tests/audit и Python dependency audit. Фактический итог запуска CI добавляется после публикации; наличие workflow само по себе не доказывает его успешный запуск.
+Полный [GitHub Actions запуск42358616022](https://github.com/arxey/LocalInterfaceWeb/actions/runs/42358616022) завершился **success** для коммита2491598ec643b058bcc3a4b9416ca98c8676eba3. Последующие изменения относятся только к документации и архиву.
+
+| Проверка в GitHub Actions | Итог |
+|---|---|
+| Launcher checks Windows/macOS/Ubuntu | Все3 jobs success, по5 тестов |
+| Clean Docker startup с pgAdmin | PASS |
+| Compose/Nginx/health/pgAdmin ping | PASS |
+| Django на PostgreSQL17 |34 теста PASS |
+| HTTP SPA/CSRF/auth/upload/replace/search/delete/logout | PASS |
+| Cold restart без удаления томов | БД, измененные метаданные, оба файла и пароль сохранились |
+| Frontend в чистом build image |18 тестов, build и audit PASS |
+| Python dependency audit |0 известных уязвимостей |
+| Chromium156.0.8078.4 | Весь UI-сценарий и mobile PASS |
+| Firefox157.0 | Весь UI-сценарий и mobile PASS |
+| WebKit27.2 | Весь UI-сценарий и mobile PASS |
+
+Первая браузерная проверка выявила использование строкового eval внутри тестового wait_for_function, запрещенного CSP. Тест изменен на CSP-совместимую проверку DOM properties; защитная политика приложения сохранена. Последний полный прогон прошел, а не был ограничен повторным запуском отдельного упавшего шага.
 
 Проверка движка не равна нативной проверке Opera/Safari. Нагрузочные испытания, пентест публичного сервера, отказ диска/питания и все комбинации ОС не проводились. Общая квота диска и приватные альбомы отсутствуют. Внешняя транзакция/авария могут оставить лишние файлы: cleanup_orphan_media по умолчанию показывает кандидатов старше24часов, --delete является явным действием. Публичное HTTPS-развертывание отдельно не выполнялось. Детали см. SECURITY.md и матрицу требований.
