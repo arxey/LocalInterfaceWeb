@@ -24,7 +24,7 @@ RUN sed -i 's/\r$//' /usr/local/bin/backend-entrypoint \
 USER 10001:10001
 EXPOSE 8000
 ENTRYPOINT ["backend-entrypoint"]
-CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "2", "--threads", "2", "--timeout", "60", "--access-logfile", "-", "--error-logfile", "-"]
+CMD ["gunicorn", "config.wsgi:application", "--no-control-socket", "--bind", "0.0.0.0:8000", "--workers", "2", "--threads", "2", "--timeout", "60", "--access-logfile", "-", "--error-logfile", "-"]
 
 FROM nginx:1.28-alpine AS web
 COPY deployment/nginx.conf /etc/nginx/conf.d/default.conf

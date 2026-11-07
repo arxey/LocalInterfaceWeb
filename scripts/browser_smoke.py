@@ -16,7 +16,10 @@ def exercise(browser, base_url, credentials, name):
     expect(page.get_by_text("Осеннее озеро в горах", exact=True)).to_be_visible()
     expect(page.get_by_role("button", name="Добавить фотографию", exact=True)).to_have_count(0)
     page.get_by_role("button", name="Просмотреть Осеннее озеро в горах", exact=True).click()
-    page.wait_for_function("document.querySelector('.preview-frame img')?.naturalWidth > 0")
+    image = page.locator('.preview-frame img')
+    expect(image).to_have_js_property('complete', True)
+    if image.evaluate('(img) => img.naturalWidth') <= 0:
+        raise RuntimeError(f'{name}: full image did not load')
     page.keyboard.press("Escape")
     expect(page.get_by_role("dialog")).to_have_count(0)
     page.get_by_role("button", name="Войти", exact=True).click()
@@ -34,7 +37,10 @@ def exercise(browser, base_url, credentials, name):
     page.get_by_role("button", name="Найти", exact=True).click()
     expect(page.get_by_text(title, exact=True)).to_be_visible()
     page.get_by_role("button", name=f"Редактировать {title}", exact=True).click()
-    page.wait_for_function("document.querySelector('.preview-frame img')?.naturalWidth > 0")
+    image = page.locator('.preview-frame img')
+    expect(image).to_have_js_property('complete', True)
+    if image.evaluate('(img) => img.naturalWidth') <= 0:
+        raise RuntimeError(f'{name}: edited full image did not load')
     page.get_by_label("Название фотографии", exact=True).fill(title + " изменена")
     page.get_by_role("button", name="Сохранить", exact=True).click()
     expect(page.get_by_text(title + " изменена", exact=True)).to_be_visible()
