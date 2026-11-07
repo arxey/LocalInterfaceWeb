@@ -1,0 +1,92 @@
+name: Test portable installation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: portable-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: "true"
+  NO_BROWSER: "1"
+
+jobs:
+  launchers:
+    name: Launcher checks (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Check launchers without a Docker daemon
+        run: python scripts/test_launchers.py
+
+  stack:
+    name: Clean Docker start and persistence
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Start from a clean checkout, including optional pgAdmin
+        run: sh start.sh --tools --no-browser
+      - name: Validate Compose and Nginx configuration
+        run: |
+          docker compose --env-file .env.docker config --quiet
+          docker compose --env-file .env.docker exec -T web nginx -t
+          curl --fail --silent http://localhost:5050/misc/ping
+      - name: Run backend tests against PostgreSQL
+        run: docker compose --env-file .env.docker exec -T backend python manage.py test --noinput
+      - name: Exercise the public stack
+        run: python scripts/smoke.py --phase exercise
+      - name: Stop and cold-start without deleting volumes
+        run: |
+          sha256sum .env.docker > /tmp/photo-env.sha256
+          sh stop.sh
+          sh start.sh --no-browser
+          sha256sum --check /tmp/photo-env.sha256
+      - name: Verify persisted database and uploads
+        run: python scripts/smoke.py --phase verify
+      - name: Verify frontend tests and dependency audit in build image
+        run: |
+          docker build --target frontend-build -t localinterfaceweb-frontend-check .
+          docker run --rm localinterfaceweb-frontend-check pnpm test
+          docker run --rm localinterfaceweb-frontend-check pnpm audit --audit-level=moderate
+      - name: Show diagnostics on failure
+        if: failure()
+        run: |
+          if [ -f .env.docker ]; then
+            docker compose --env-file .env.docker --profile tools ps -a
+            docker compose --env-file .env.docker --profile tools logs --tail=150
+          fi
+      - name: Clean up isolated CI data
+        if: always()
+        run: |
+          if [ -f .env.docker ]; then
+            docker compose --env-file .env.docker --profile tools down --volumes --remove-orphans
+          fi
+
+  python-audit:
+    name: Backend dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install pip-audit
+      - run: python -m pip_audit --strict -r backend/requirements.txt
