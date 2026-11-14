@@ -62,7 +62,7 @@ $logDirectory = Join-Path $allowedRoot ('ci-integration-' + $suffix)
 New-Item -ItemType Directory -Path $logDirectory | Out-Null
 # Keep the original archive input pristine and place the relocation test wholly
 # inside one private CI directory, without granting rights on its parent.
-$testBundle = Join-Path $logDirectory 'test-bundle'
+$testBundle = Join-Path $logDirectory ('test-bundle-' + [char]0x4e2d)
 Copy-Item -LiteralPath $bundle -Destination $testBundle -Recurse
 $test = Join-Path $testBundle 'portable/test_bundle.py'
 # The integration process must not map Python/DLL files from the directory it

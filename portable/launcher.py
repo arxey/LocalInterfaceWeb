@@ -1,7 +1,9 @@
 """Offline Windows launcher. All mutable state belongs to this bundle's data/."""
 
 import argparse
+from contextlib import contextmanager
 import ctypes
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -24,6 +26,157 @@ class LaunchError(Exception):
 
 class StopRequested(Exception):
     pass
+
+
+class DosDriveAPI:
+    """Windows logon-session drive aliases; no service or registry changes."""
+    def __init__(self):
+        from ctypes import wintypes
+        self.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        self.kernel.QueryDosDeviceW.argtypes = (wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD)
+        self.kernel.QueryDosDeviceW.restype = wintypes.DWORD
+        self.kernel.DefineDosDeviceW.argtypes = (wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR)
+        self.kernel.DefineDosDeviceW.restype = wintypes.BOOL
+        self.kernel.GetLogicalDrives.restype = wintypes.DWORD
+        self.kernel.CreateMutexW.argtypes = (ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR)
+        self.kernel.CreateMutexW.restype = wintypes.HANDLE
+        self.kernel.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        self.kernel.WaitForSingleObject.restype = wintypes.DWORD
+        self.kernel.ReleaseMutex.argtypes = (wintypes.HANDLE,)
+        self.kernel.ReleaseMutex.restype = wintypes.BOOL
+        self.kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+        self.kernel.CloseHandle.restype = wintypes.BOOL
+
+    def query(self, drive):
+        value = ctypes.create_unicode_buffer(32768)
+        if self.kernel.QueryDosDeviceW(drive, value, len(value)):
+            return value.value
+        error = ctypes.get_last_error()
+        if error == 2:  # ERROR_FILE_NOT_FOUND
+            return None
+        raise ctypes.WinError(error)
+
+    def define(self, drive, target):
+        if not self.kernel.DefineDosDeviceW(0x9, drive, target):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def remove(self, drive, target):
+        if not self.kernel.DefineDosDeviceW(0xF, drive, target):
+            error = ctypes.get_last_error()
+            if error != 2:
+                raise ctypes.WinError(error)
+
+    @contextmanager
+    def allocation_lock(self):
+        # Serialize drive selection across copies of this app for the same user.
+        from ctypes import wintypes
+        security = ctypes.WinDLL("secur32", use_last_error=True)
+        security.GetUserNameExW.argtypes = (ctypes.c_int, wintypes.LPWSTR, ctypes.POINTER(wintypes.ULONG))
+        security.GetUserNameExW.restype = wintypes.BOOL
+        name = ctypes.create_unicode_buffer(1024)
+        length = wintypes.ULONG(len(name))
+        if not security.GetUserNameExW(2, name, ctypes.byref(length)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        key = hashlib.sha256(name.value.casefold().encode("utf-8")).hexdigest()[:24]
+        handle = self.kernel.CreateMutexW(None, False, "Local\\PhotoServicePGDrive-" + key)
+        if not handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        acquired = False
+        try:
+            result = self.kernel.WaitForSingleObject(handle, 10000)
+            if result not in (0, 0x80):  # WAIT_OBJECT_0 / WAIT_ABANDONED
+                raise LaunchError("Another application copy is preparing PostgreSQL. Try starting again.")
+            acquired = True
+            yield
+        finally:
+            if acquired:
+                self.kernel.ReleaseMutex(handle)
+            self.kernel.CloseHandle(handle)
+
+
+def dos_device_target(root):
+    target = str(Path(root).resolve())
+    return "\\??\\UNC\\" + target[2:] if target.startswith("\\\\") else "\\??\\" + target
+
+
+def cleanup_stale_dos_alias(root, api=None):
+    record = Path(root) / "data/dos-alias.json"
+    if not record.is_file():
+        return
+    value = read_json(record)
+    drive, target = value.get("drive"), value.get("target")
+    if (value.get("version") != 1 or not isinstance(drive, str) or len(drive) != 2
+            or not "D" <= drive[0] <= "Z" or drive[1] != ":"
+            or not isinstance(target, str) or not target.startswith("\\??\\")
+            or not isinstance(value.get("token"), str) or not value["token"]):
+        raise LaunchError("Invalid temporary data/dos-alias.json. Saved database files were not changed.")
+    # Metadata alone is not authority over another mapping. Only reclaim an
+    # alias of this exact current bundle, even if a corrupt record matches a
+    # genuinely existing foreign drive. A moved-after-crash old alias is left
+    # untouched and expires with its Windows logon session.
+    if target == dos_device_target(root):
+        api = api or DosDriveAPI()
+        if api.query(drive) == target:
+            api.remove(drive, target)
+    # A reused letter with another target belongs to someone else; leave it alone.
+    record.unlink(missing_ok=True)
+
+
+class PostgresPaths:
+    """Give legacy PostgreSQL narrow Win32 APIs an ASCII executable/data path."""
+    def __init__(self, root):
+        self.root = Path(root)
+        self.base = self.root
+        self.drive = None
+        self.target = None
+        self.token = secrets.token_hex(24)
+        self.api = None
+
+    def acquire(self):
+        if os.name != "nt":
+            return self
+        self.api = DosDriveAPI()
+        with self.api.allocation_lock():
+            cleanup_stale_dos_alias(self.root, self.api)
+            if str(self.root).isascii():
+                return self
+            target = dos_device_target(self.root)
+            logical = self.api.kernel.GetLogicalDrives()
+            for drive in "ZYXWVUTSRQPONMLKJIHGFED":
+                letter = drive + ":"
+                if logical & (1 << (ord(drive) - ord("A"))) or self.api.query(letter) is not None:
+                    continue
+                self.api.define(letter, target)
+                self.drive, self.target = letter, target
+                self.base = Path(letter + "\\")
+                try:
+                    write_json(self.root / "data/dos-alias.json", {
+                        "version": 1, "drive": letter, "target": target, "token": self.token,
+                    })
+                except Exception:
+                    self.api.remove(letter, target)
+                    self.drive = None
+                    raise
+                return self
+        raise LaunchError("No free temporary drive letter for PostgreSQL. Disconnect one unused mapped drive and start again. Saved data was preserved.")
+
+    def environment(self, env):
+        if self.drive is None:
+            return env.copy()
+        return env | {name: str(self.base / "data/tmp") for name in ("TEMP", "TMP", "TMPDIR")}
+
+    def close(self):
+        if self.drive is None:
+            return
+        record = self.root / "data/dos-alias.json"
+        with self.api.allocation_lock():
+            value = read_json(record) if record.is_file() else None
+            if value is not None and value.get("token") != self.token:
+                return
+            if self.api.query(self.drive) == self.target:
+                self.api.remove(self.drive, self.target)
+            record.unlink(missing_ok=True)
+            self.drive = None
 
 
 def safe_directory(root, relative):
@@ -321,7 +474,7 @@ def run_command(group, arguments, root, env, log, timeout=120):
         raise LaunchError(f"A startup command failed (exit {code}). See data/logs/{log.name}.\n{log_tail(log)}")
 
 
-def initialize_database(root, config, group, env):
+def initialize_database(root, config, group, env, paths):
     if not database_needs_initialization(root):
         return
     print("Creating the local PostgreSQL database...", flush=True)
@@ -329,10 +482,11 @@ def initialize_database(root, config, group, env):
     try:
         with os.fdopen(descriptor, "w", encoding="ascii", newline="\n") as stream:
             stream.write(config["superuser_password"] + "\n")
-        run_command(group, [root / "runtime/postgresql/bin/initdb.exe", "-D", root / "data/postgres",
+        run_command(group, [paths.base / "runtime/postgresql/bin/initdb.exe", "-D", paths.base / "data/postgres",
                            "--username=portable_admin", "--encoding=UTF8", "--locale=C",
-                           "--auth-local=scram-sha-256", "--auth-host=scram-sha-256", "--pwfile", filename],
-                    root, env, root / "data/logs/initdb.log")
+                           "--auth-local=scram-sha-256", "--auth-host=scram-sha-256", "--pwfile",
+                           paths.base / "data" / Path(filename).name],
+                    paths.base, paths.environment(env), root / "data/logs/initdb.log")
     finally:
         Path(filename).unlink(missing_ok=True)
 
@@ -424,7 +578,7 @@ def wait_for_http(root, url, process, database, token, timeout=60):
     raise LaunchError("The local web server did not become ready. See data/logs/server.log.")
 
 
-def stop_database(root, process, group, env):
+def stop_database(root, process, group, env, paths):
     if process is None or process.poll() is not None:
         return
     # Verify the live child against this data directory before asking pg_ctl to
@@ -435,9 +589,9 @@ def stop_database(root, process, group, env):
         pid = None
     if pid == process.pid:
         try:
-            run_command(group, [root / "runtime/postgresql/bin/pg_ctl.exe", "-D", root / "data/postgres",
+            run_command(group, [paths.base / "runtime/postgresql/bin/pg_ctl.exe", "-D", paths.base / "data/postgres",
                                 "stop", "-m", "fast", "-w", "-t", "20"],
-                        root, env, root / "data/logs/shutdown.log", timeout=25)
+                        paths.base, paths.environment(env), root / "data/logs/shutdown.log", timeout=25)
             process.wait(timeout=5)
             return
         except (LaunchError, subprocess.TimeoutExpired) as error:
@@ -504,6 +658,7 @@ def launch(root, no_browser=False, headless=False):
     database = None
     server = None
     env = None
+    pg_paths = None
     token = secrets.token_hex(24)
     state = None
     try:
@@ -515,15 +670,18 @@ def launch(root, no_browser=False, headless=False):
         (data / "stop-request.json").unlink(missing_ok=True)
         write_json(data / "running.json", state)
         group = ChildProcesses()
-        initialize_database(root, config, group, env)
+        pg_paths = PostgresPaths(root)
+        pg_paths.acquire()
+        initialize_database(root, config, group, env, pg_paths)
         if stop_requested(root, token):
             raise StopRequested()
         with (data / "logs/postgresql.log").open("ab", buffering=0) as output:
-            database = group.spawn([root / "runtime/postgresql/bin/postgres.exe", "-D", data / "postgres",
+            database = group.spawn([pg_paths.base / "runtime/postgresql/bin/postgres.exe", "-D", pg_paths.base / "data/postgres",
                                     "-h", "127.0.0.1", "-p", str(config["database_port"]),
                                     "-c", "shared_buffers=64MB", "-c", "max_connections=20",
                                     "-c", "password_encryption=scram-sha-256", "-c", "logging_collector=off"],
-                                   cwd=root, env=env, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT)
+                                   cwd=pg_paths.base, env=pg_paths.environment(env), stdin=subprocess.DEVNULL,
+                                   stdout=output, stderr=subprocess.STDOUT)
         wait_for_database(root, config, database, token)
         prepare_database(root, config, database.pid)
         python = root / "runtime/python/python.exe"
@@ -558,10 +716,16 @@ def launch(root, no_browser=False, headless=False):
         # Ignore further Ctrl+C while PostgreSQL completes its fast shutdown.
         previous_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
         try:
-            if group:
-                group.stop(server)
-                stop_database(root, database, group, env)
-                group.close()
+            try:
+                if group:
+                    try:
+                        group.stop(server)
+                        stop_database(root, database, group, env, pg_paths)
+                    finally:
+                        group.close()
+            finally:
+                if pg_paths:
+                    pg_paths.close()
             (data / "running.json").unlink(missing_ok=True)
             (data / "stop-request.json").unlink(missing_ok=True)
         finally:

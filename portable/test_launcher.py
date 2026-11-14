@@ -40,6 +40,58 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual((moved / "data/config.json").read_bytes(), saved)
         self.assertNotIn(str(self.root), saved.decode())
 
+    @unittest.skipUnless(os.name == "nt", "Windows per-user DOS drive mapping")
+    def test_non_ascii_postgres_paths_use_a_temporary_ascii_drive_and_preserve_files(self):
+        marker = self.root / "data/中文.txt"
+        marker.write_text("original data", encoding="utf-8")
+        paths = launcher.PostgresPaths(self.root)
+        self.addCleanup(paths.close)
+        paths.acquire()
+        self.assertTrue(str(paths.base).isascii())
+        self.assertEqual((paths.base / "data/中文.txt").read_text(encoding="utf-8"), "original data")
+        record = json.loads((self.root / "data/dos-alias.json").read_text(encoding="utf-8"))
+        self.assertEqual(launcher.DosDriveAPI().query(record["drive"]), record["target"])
+        paths.close()
+        self.assertIsNone(launcher.DosDriveAPI().query(record["drive"]))
+        self.assertFalse((self.root / "data/dos-alias.json").exists())
+        self.assertEqual(marker.read_text(encoding="utf-8"), "original data")
+
+    @unittest.skipUnless(os.name == "nt", "Windows per-user DOS drive mapping")
+    def test_stale_owned_dos_alias_is_reclaimed_before_allocating_another(self):
+        first = launcher.PostgresPaths(self.root)
+        self.addCleanup(first.close)
+        first.acquire()
+        second = launcher.PostgresPaths(self.root)
+        self.addCleanup(second.close)
+        second.acquire()
+        record = json.loads((self.root / "data/dos-alias.json").read_text(encoding="utf-8"))
+        self.assertEqual(launcher.DosDriveAPI().query(record["drive"]), record["target"])
+        second.close()
+        self.assertIsNone(launcher.DosDriveAPI().query(record["drive"]))
+
+    @unittest.skipUnless(os.name == "nt", "Windows per-user DOS drive mapping")
+    def test_stale_alias_metadata_does_not_remove_an_unrelated_drive(self):
+        paths = launcher.PostgresPaths(self.root)
+        self.addCleanup(paths.close)
+        paths.acquire()
+        record = json.loads((self.root / "data/dos-alias.json").read_text(encoding="utf-8"))
+        record["target"] += "-different"
+        (self.root / "data/dos-alias.json").write_text(json.dumps(record))
+        launcher.cleanup_stale_dos_alias(self.root)
+        self.assertEqual(launcher.DosDriveAPI().query(record["drive"]), paths.target)
+
+    def test_corrupt_metadata_cannot_remove_a_matching_but_foreign_dos_mapping(self):
+        foreign_target = "\\??\\C:\\UnrelatedExistingApplication"
+        (self.root / "data/dos-alias.json").write_text(json.dumps({
+            "version": 1, "drive": "Z:", "target": foreign_target, "token": "corrupt-record",
+        }), encoding="utf-8")
+        class ForeignDrive:
+            def query(self, drive):
+                return foreign_target
+            def remove(self, drive, target):
+                raise AssertionError("A foreign mapping must never be removed, even when metadata matches it")
+        launcher.cleanup_stale_dos_alias(self.root, ForeignDrive())
+
     def test_missing_configuration_never_reinitializes_an_existing_database(self):
         database = self.root / "data/postgres"
         database.mkdir()

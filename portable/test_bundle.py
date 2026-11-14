@@ -51,22 +51,28 @@ def start(bundle):
 def verify_local_crt(bundle, env):
     script = r'''
     $ErrorActionPreference = 'Stop'
-    $prefix = [IO.Path]::GetFullPath($env:CHECK_BUNDLE)
-    $program = Join-Path $prefix 'runtime\postgresql\bin\postgres.exe'
-    $servers = @(Get-Process postgres -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $program })
-    if (-not $servers.Count) { throw 'No owned PostgreSQL process found' }
-    $modules = @($servers[0].Modules | Where-Object { $_.ModuleName -match '^(msvcp140|vcruntime140)' })
+    [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
+    $server = Get-Process -Id ([int]$env:CHECK_PG_PID)
+    $modules = @($server.Modules | Where-Object { $_.ModuleName -match '^(msvcp140|vcruntime140)' })
     if (-not $modules.Count) { throw 'No Microsoft CRT modules found' }
-    foreach ($module in $modules) {
-      if (-not $module.FileName.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
-        throw ('CRT was loaded outside the bundle: ' + $module.FileName)
-      }
-    }
-    Write-Output ('App-local CRT verified: ' + (($modules | ForEach-Object ModuleName) -join ', '))
+    ConvertTo-Json -InputObject @($modules | ForEach-Object FileName) -Compress
     '''
     shell = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
-    subprocess.run([str(shell), '-NoProfile', '-Command', script],
-                   env=env | {'CHECK_BUNDLE': str(bundle)}, check=True, timeout=15)
+    pid = (bundle / 'data/postgres/postmaster.pid').read_bytes().partition(b'\n')[0].strip()
+    if not pid.isdigit():
+        raise RuntimeError('Invalid owned PostgreSQL PID')
+    result = subprocess.run([str(shell), '-NoProfile', '-Command', script],
+                            env=env | {'CHECK_PG_PID': pid.decode('ascii')},
+                            capture_output=True, text=True, encoding='utf-8', check=True, timeout=15)
+    modules = [Path(value).resolve() for value in json.loads(result.stdout)]
+    expected = (bundle / 'runtime/postgresql/bin').resolve()
+    for module in modules:
+        if module.parent != expected:
+            raise RuntimeError('CRT was loaded outside the bundle: ' + str(module))
+    required = {'vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll'}
+    if not required.issubset({module.name.lower() for module in modules}):
+        raise RuntimeError('A required app-local CRT module was not loaded')
+    print('App-local CRT verified: ' + ', '.join(module.name for module in modules), flush=True)
 
 
 def stop(bundle, process, env):
@@ -87,7 +93,7 @@ def main():
     if not (bundle / 'runtime/python/python.exe').is_file() or (bundle / 'data').exists():
         raise RuntimeError('Use a fresh built bundle, never a user installation')
     # This test owns only this new build directory; relocation stays in its parent.
-    moved = bundle.parent / (bundle.name + ' перенос с пробелами')
+    moved = bundle.parent / (bundle.name + ' перенос с пробелами ' + chr(0x65B0))
     if moved.exists() or moved.resolve().parent != bundle.parent:
         raise RuntimeError('Relocation target must be fresh and stay inside the build directory')
     sys.path.insert(0, str(bundle / 'scripts'))
