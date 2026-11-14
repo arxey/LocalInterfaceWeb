@@ -36,7 +36,17 @@ jobs:
       - name: Verify native launcher and extraction safety
         run: python -m unittest discover -s portable -p "test_*.py"
       - name: Test fresh offline start and relocation persistence
-        run: python portable/test_bundle.py --bundle build-portable/distribution
+        run: |
+          # The hosted D: workspace is inherited from Administrators. PostgreSQL
+          # drops that group; give this user's own SID rights on the fresh test
+          # bundle, as a normal user's Documents folder already would.
+          $bundle = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'build-portable/distribution'))
+          $allowedRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'build-portable')) + [IO.Path]::DirectorySeparatorChar
+          if (-not $bundle.StartsWith($allowedRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe test bundle path' }
+          $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          icacls $bundle /grant "*$($sid):(OI)(CI)F" /T /Q | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Could not prepare user-owned test folder' }
+          python portable/test_bundle.py --bundle $bundle
       - name: Retain clean archive built before test data
         uses: actions/upload-artifact@v4
         with:
