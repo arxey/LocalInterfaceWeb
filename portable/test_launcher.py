@@ -82,8 +82,8 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(env["POSTGRES_HOST"], "127.0.0.1")
         self.assertEqual(env["DJANGO_PORTABLE"], "1")
         self.assertEqual(env["DJANGO_DEBUG"], "0")
-        self.assertEqual(env["DJANGO_MEDIA_ROOT"], str(self.root / "data/media"))
-        self.assertEqual(env["PORTABLE_FRONTEND_ROOT"], str(self.root / "frontend/dist"))
+        self.assertEqual(Path(env["DJANGO_MEDIA_ROOT"]).resolve(), (self.root / "data/media").resolve())
+        self.assertEqual(Path(env["PORTABLE_FRONTEND_ROOT"]).resolve(), (self.root / "frontend/dist").resolve())
 
     def test_only_one_instance_can_hold_the_data_directory_lock(self):
         first = launcher.InstanceLock(self.root / "data/run.lock")
