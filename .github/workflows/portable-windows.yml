@@ -1,0 +1,57 @@
+name: Offline Windows release
+
+on:
+  push:
+    tags: ['v*-portable']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  portable:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      CI: 'true'
+      PORTABLE_BUILD_CACHE: ${{ github.workspace }}/.portable-build-cache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Build static frontend on the packaging machine
+        working-directory: frontend
+        run: |
+          npm install --global pnpm@10.34.9
+          pnpm install --frozen-lockfile
+          pnpm test
+          pnpm build
+          pnpm audit --audit-level=low
+      - name: Build pinned offline Windows archive
+        run: python portable/build.py --output build-portable/distribution --zip dist-release/LocalInterfaceWeb-Windows-x64.zip
+      - name: Verify native launcher and extraction safety
+        run: python -m unittest discover -s portable -p "test_*.py"
+      - name: Test fresh offline start and relocation persistence
+        run: python portable/test_bundle.py --bundle build-portable/distribution
+      - name: Retain clean archive built before test data
+        uses: actions/upload-artifact@v4
+        with:
+          name: LocalInterfaceWeb-Windows-x64
+          path: dist-release/LocalInterfaceWeb-Windows-x64.zip*
+      - name: Publish downloadable release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$env:GITHUB_REF_NAME" dist-release/LocalInterfaceWeb-Windows-x64.zip dist-release/LocalInterfaceWeb-Windows-x64.zip.sha256 --verify-tag --title "Offline Windows version" --notes-file docs/portable-release.md --latest
+      - name: Show startup diagnostics on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          Get-ChildItem build-portable -Recurse -Filter *.log -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Output $_.FullName
+            Get-Content -LiteralPath $_.FullName -Tail 30
+          }

@@ -1,0 +1,25 @@
+{
+  "python": {
+    "url": "https://python.org/ftp/python/3.14.10/python-3.14.10-embed-amd64.zip",
+    "sha256": "90905e64a840557d8c1bc4f5b74db3d7ee85e3ffb217611cac1c7813acea4159",
+    "file": "python-3.14.10-embed-amd64.zip",
+    "source": "https://www.python.org/downloads/release/python-31410/"
+  },
+  "postgresql": {
+    "url": "https://get.enterprisedb.com/postgresql/postgresql-18.7-1-windows-x64-binaries.zip",
+    "sha256": "ead0bbc27fb678fa24dcf86b738981323042abd073c744103bf7f3aed23f9a33",
+    "file": "postgresql-18.7-1-windows-x64-binaries.zip",
+    "source": "https://www.postgresql.org/download/windows/"
+  },
+  "vcredist": {
+    "url": "https://download.visualstudio.microsoft.com/download/pr/78d061c5-9ef3-42ab-98ed-3309d1095dc4/9C02C9ED120F671B900E6B9471D890E3B2414117A7E53F4AE2E855466FA2B7C9/VC_redist.x64.exe",
+    "sha256": "9c02c9ed120f671b900e6b9471d890e3b2414117a7e53f4ae2e855466fa2b7c9",
+    "file": "VC_redist.x64.exe",
+    "source": "https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist"
+  },
+  "vcredist_license": {
+    "url": "https://visualstudio.microsoft.com/wp-content/uploads/2025/10/Visual-C-V14-License-Redistributable_and_Runtime_ENU.docx",
+    "sha256": "08651651a7602fc7c0e2763de0fde1ff9f868df2780597cd1775ee9d6441c783",
+    "file": "Visual-C-V14-License-Redistributable_and_Runtime_ENU.docx"
+  }
+}

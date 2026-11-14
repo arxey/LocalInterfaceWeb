@@ -19,3 +19,8 @@ test-results/
 *.log
 *.pem
 *.key
+data/
+runtime/
+build-portable/
+.portable-build-cache/
+dist-release/
